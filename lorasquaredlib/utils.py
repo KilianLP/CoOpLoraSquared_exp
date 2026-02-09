@@ -11,6 +11,57 @@ from loralib.utils import INDEX_POSITIONS_TEXT, INDEX_POSITIONS_VISION
 from .layers import LinearLoRASquared
 
 
+def lorasquared_state_dict(
+    model: nn.Module, *, include_router: bool = True
+) -> dict[str, torch.Tensor]:
+    """
+    Collect only LoRA^2 (shared/expert) parameters and optionally router weights.
+    """
+    state = {}
+    for name, param in model.named_parameters():
+        if any(tag in name for tag in ("lora_shared", "lora_expert")):
+            state[name] = param.detach().cpu()
+        elif include_router and "router" in name:
+            state[name] = param.detach().cpu()
+    return state
+
+
+def save_lorasquared(
+    model: nn.Module,
+    path: str,
+    *,
+    include_router: bool = True,
+) -> None:
+    """
+    Save LoRA^2 adapters (and optionally router) to ``path``.
+    """
+    torch.save({"state_dict": lorasquared_state_dict(model, include_router=include_router)}, path)
+
+
+def load_lorasquared(
+    model: nn.Module,
+    path: str,
+    *,
+    include_router: bool = True,
+    map_location: str | torch.device = "cpu",
+    strict: bool = False,
+) -> tuple[list[str], list[str]]:
+    """
+    Load LoRA^2 adapters (and optionally router) from ``path`` into ``model``.
+    Returns (missing_keys, unexpected_keys) from ``load_state_dict`` for transparency.
+    """
+    checkpoint = torch.load(path, map_location=map_location)
+    state = checkpoint.get("state_dict", checkpoint)
+    filtered = {}
+    for k, v in state.items():
+        if any(tag in k for tag in ("lora_shared", "lora_expert")):
+            filtered[k] = v
+        elif include_router and "router" in k:
+            filtered[k] = v
+    missing, unexpected = model.load_state_dict(filtered, strict=strict)
+    return missing, unexpected
+
+
 def _cosine_squared_shared_expert(
     A_shared: torch.Tensor,
     B_shared: torch.Tensor,
@@ -350,6 +401,9 @@ def apply_lorasquared(
     alpha_shared: float = 1.0,
     alpha_expert: float = 1.0,
     dropout_rate: float = 0.0,
+    enable_router: bool = False,
+    router_temperature: float = 1.0,
+    router_mode: str = "weighted",
     verbose: bool = True,
 ) -> List[PlainMultiheadAttentionLoRASquared]:
     """
@@ -385,6 +439,9 @@ def apply_lorasquared(
                             alpha_shared=alpha_shared,
                             alpha_expert=alpha_expert,
                             dropout_rate=dropout_rate,
+                            enable_router=enable_router,
+                            router_temperature=router_temperature,
+                            router_mode=router_mode,
                         )
                         setattr(block, name, new_mha)
                         wrapped_layers.append(new_mha)
@@ -411,6 +468,9 @@ def apply_lorasquared(
                             alpha_shared=alpha_shared,
                             alpha_expert=alpha_expert,
                             dropout_rate=dropout_rate,
+                            enable_router=enable_router,
+                            router_temperature=router_temperature,
+                            router_mode=router_mode,
                         )
                         setattr(block, name, new_mha)
                         wrapped_layers.append(new_mha)

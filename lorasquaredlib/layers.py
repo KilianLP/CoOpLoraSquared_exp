@@ -3,6 +3,7 @@ from typing import Iterable, List, Optional, Sequence, Tuple, Union
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 
 ExpertSelector = Optional[Union[int, Sequence[int], Iterable[int], torch.Tensor]]
@@ -38,6 +39,9 @@ class LinearLoRASquared(nn.Linear):
         dropout_rate: float = 0.0,
         fan_in_fan_out: bool = False,
         freeze_base: bool = True,
+        enable_router: bool = False,
+        router_temperature: float = 1.0,
+        router_mode: str = "weighted",
     ) -> None:
         super().__init__(
             in_features=existing_linear.in_features,
@@ -54,6 +58,9 @@ class LinearLoRASquared(nn.Linear):
         self.alpha_expert = alpha_expert
         self.fan_in_fan_out = fan_in_fan_out
         self.average_expert_mode = False
+        self.router_mode = router_mode
+        self.router_temperature = router_temperature
+        self.router_enabled = False
 
         if self.fan_in_fan_out:
             self.weight.data = self.weight.data.t()
@@ -66,6 +73,13 @@ class LinearLoRASquared(nn.Linear):
             self.weight.requires_grad = False
             if self.bias is not None:
                 self.bias.requires_grad = False
+
+        if enable_router and self.n_experts > 0:
+            self.router = nn.Linear(self.in_features, self.n_experts, bias=True)
+            nn.init.zeros_(self.router.weight)
+            nn.init.zeros_(self.router.bias)
+        else:
+            self.router = None
 
         # Shared LoRA branch
         if self.r_shared > 0:
@@ -217,6 +231,34 @@ class LinearLoRASquared(nn.Linear):
             update = update / len(indices)
         return update
 
+    def _apply_router_mixture(
+        self, dropped: torch.Tensor, weights: torch.Tensor
+    ) -> torch.Tensor:
+        if self.r_expert == 0 or self.n_experts == 0:
+            return dropped.new_zeros((dropped.shape[0], self.out_features))
+        update = dropped.new_zeros((dropped.shape[0], self.out_features))
+        for idx in range(self.n_experts):
+            coeff = weights[:, idx].unsqueeze(-1)
+            if torch.all(coeff == 0):
+                continue
+            proj = self._expert_projection(dropped, idx)
+            update = update + coeff * proj
+        return update
+
+    def set_router_state(
+        self,
+        *,
+        enabled: Optional[bool] = None,
+        mode: Optional[str] = None,
+        temperature: Optional[float] = None,
+    ) -> None:
+        if enabled is not None and self.router is not None:
+            self.router_enabled = enabled
+        if mode is not None:
+            self.router_mode = mode
+        if temperature is not None:
+            self.router_temperature = temperature
+
     def _apply_per_sample_experts(
         self, dropped: torch.Tensor, routing: torch.Tensor, indices: Sequence[int]
     ) -> torch.Tensor:
@@ -255,19 +297,45 @@ class LinearLoRASquared(nn.Linear):
             shared = self._apply_shared(dropped).view(*view_shape)
             result = result + shared
 
-        total_items = flat_input.shape[0]
-        indices, routing = self._normalize_indices(
-            expert_index,
-            batch_shape=batch_shape,
-            total_items=total_items,
-            device=x.device,
-        )
-        if routing is not None:
-            per_sample_update = self._apply_per_sample_experts(dropped, routing, indices)
-            result = result + per_sample_update.view(*view_shape)
-        elif indices:
-            expert_update = self._apply_experts(dropped, indices)
+        use_router = self.router is not None and self.router_enabled
+
+        if use_router:
+            temp = max(float(self.router_temperature), 1e-5)
+            if self.router_mode == "weighted":
+                weights = torch.softmax(self.router(flat_input) / temp, dim=-1)
+            elif self.router_mode == "gumbel":
+                weights = F.gumbel_softmax(
+                    self.router(flat_input), tau=temp, hard=False, dim=-1
+                )
+            elif self.router_mode == "ste":
+                weights = F.gumbel_softmax(
+                    self.router(flat_input), tau=temp, hard=True, dim=-1
+                )
+            elif self.router_mode == "ste_softmax":
+                logits = self.router(flat_input) / temp
+                soft = torch.softmax(logits, dim=-1)
+                hard = torch.zeros_like(soft)
+                hard.scatter_(1, logits.argmax(dim=-1, keepdim=True), 1.0)
+                weights = hard + (soft - soft.detach()) 
+            else:
+                raise ValueError(f"Unknown router_mode '{self.router_mode}'.")
+
+            expert_update = self._apply_router_mixture(dropped, weights)
             result = result + expert_update.view(*view_shape)
+        else:
+            total_items = flat_input.shape[0]
+            indices, routing = self._normalize_indices(
+                expert_index,
+                batch_shape=batch_shape,
+                total_items=total_items,
+                device=x.device,
+            )
+            if routing is not None:
+                per_sample_update = self._apply_per_sample_experts(dropped, routing, indices)
+                result = result + per_sample_update.view(*view_shape)
+            elif indices:
+                expert_update = self._apply_experts(dropped, indices)
+                result = result + expert_update.view(*view_shape)
 
         return result
 

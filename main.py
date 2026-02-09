@@ -85,8 +85,11 @@ def get_arguments():
     parser.add_argument('--r', default=2, type=int, help='the rank of the low-rank matrices')
     parser.add_argument('--alpha', default=1, type=int, help='scaling (see LoRA paper)')
     parser.add_argument('--dropout_rate', default=0.25, type=float, help='dropout rate applied before the LoRA module')
-    parser.add_argument('--save_path', default=None, help='path to save the lora modules after training, not saved if None')
-    parser.add_argument('--filename', default='lora_weights', help='file name to save the lora weights (.pt extension will be added)')
+    parser.add_argument('--save_path', default=None, help='directory to save the LoRA/LoRA^2 adapters after training, not saved if None')
+    parser.add_argument('--filename', default='lora_weights', help='file name to save adapter weights (.pt extension will be added)')
+    parser.add_argument('--adapter_path', default=None, help='path to existing adapter weights to load before training/eval')
+    parser.add_argument('--skip_lorasquared_train', action='store_true',
+        help='Skip LoRA^2 first-phase training (use with --adapter_path to run router-only).')
     parser.add_argument(
         '--lora_expert_assignment',
         type=str,
@@ -107,6 +110,18 @@ def get_arguments():
         help="Weight for cosine-squared orthogonality penalty between shared and expert LoRA updates. Set to 0 to disable.")
     parser.add_argument('--lora_ortho_eps', type=float, default=1e-6,
         help="Stability epsilon for the orthogonality denominator.")
+    parser.add_argument('--router_lr', type=float, default=1e-3,
+        help="Learning rate for the router-only second phase (LoRA^2).")
+    parser.add_argument('--router_wd', type=float, default=0.0,
+        help="Weight decay for router parameters in second phase.")
+    parser.add_argument('--router_iters', type=int, default=100,
+        help="Shots multiplier for router phase iterations (total iters = router_iters * shots).")
+    parser.add_argument('--router_mode', type=str, default='weighted', choices=['weighted', 'gumbel', 'ste', 'ste_softmax'],
+        help="Routing strategy: soft weighted avg, gumbel softmax, straight-through hard (gumbel), or straight-through argmax with softmax grads.")
+    parser.add_argument('--router_temperature', type=float, default=1.0,
+        help="Temperature for router softmax/gumbel during second phase.")
+    parser.add_argument('--router_phase', action='store_true',
+        help="Run the router-only second phase after LoRA^2 training (or after loading adapters).")
     parser.add_argument('--validate', action='store_true',
         help="Run the validation split after each training epoch.")
     parser.add_argument(

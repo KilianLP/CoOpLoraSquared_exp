@@ -44,9 +44,17 @@ python main.py \
 ```
 Results are written to `results/<setting>/<backbone>/<dataset>/shots_<k>/seed_<s>/.../<exp_name>.csv`.
 
+### New LoRA² options (adapters + router)
+- Save adapters (shared + experts + router): `--save_path <dir> --filename my_lora` (creates `<dir>/my_lora.pt`).
+- Load adapters (incl. router): `--adapter_path <file.pt>`; uses `strict=False`, so missing router keys are tolerated.
+- Skip first-phase training (use loaded adapters): `--skip_lorasquared_train`.
+- Router-only second phase on top of adapters: `--router_phase` (uses router hyper-params below).
+- Router hyper-params: `--router_lr`, `--router_wd`, `--router_iters` (shots multiplier), `--router_mode {weighted,gumbel,ste,ste_softmax}`, `--router_temperature`.
+- Straight-through softmax router: `--router_mode ste_softmax` (hard argmax forward, softmax grads).
+- Shared–expert orthogonality (LoRA²): enable with `--lora_ortho_lambda <coef>` and tweak stability via `--lora_ortho_eps` (cosine-squared penalty between shared and expert updates).
+
 ## 4. Tips
 - Export `CUBLAS_WORKSPACE_CONFIG=:4096:8` if you keep deterministic CUDA enabled (default in `main.py`).
 - Reduce `--workers` if the dataloader warns about too many worker processes.
 - Combine LoRA² experts at test time with `--lorasquared_base_eval shared|avg_experts` to switch between shared-only or averaged expert routing for base classes.
 - Use `summarize.py` to average multiple seeds after a sweep.
-
