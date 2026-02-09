@@ -98,13 +98,17 @@ def get_arguments():
     parser.add_argument('--lora_shared_rank', type=int, default=2,
                         help="Rank for the shared branch when using LoRA^2 (ignored otherwise).")
     parser.add_argument('--lora_expert_rank', type=int, default=0,
-                        help="Rank for each expert branch when using LoRA^2 (ignored if 0).")
+        help="Rank for each expert branch when using LoRA^2 (ignored if 0).")
     parser.add_argument('--lora_num_experts', type=int, default=0,
-                        help="Number of expert branches to instantiate for LoRA^2 (ignored if expert rank is 0).")
+        help="Number of expert branches to instantiate for LoRA^2 (ignored if expert rank is 0).")
     parser.add_argument('--lora_active_expert', type=str, default=None,
-                        help="Expert id(s) to activate for LoRA^2. Accepts comma-separated indices, 'all', or 'none'.")
+        help="Expert id(s) to activate for LoRA^2. Accepts comma-separated indices, 'all', or 'none'.")
+    parser.add_argument('--lora_ortho_lambda', type=float, default=0.0,
+        help="Weight for cosine-squared orthogonality penalty between shared and expert LoRA updates. Set to 0 to disable.")
+    parser.add_argument('--lora_ortho_eps', type=float, default=1e-6,
+        help="Stability epsilon for the orthogonality denominator.")
     parser.add_argument('--validate', action='store_true',
-                        help="Run the validation split after each training epoch.")
+        help="Run the validation split after each training epoch.")
     parser.add_argument(
         '--lorasquared_base_eval',
         type=str,

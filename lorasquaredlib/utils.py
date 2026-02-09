@@ -11,6 +11,84 @@ from loralib.utils import INDEX_POSITIONS_TEXT, INDEX_POSITIONS_VISION
 from .layers import LinearLoRASquared
 
 
+def _cosine_squared_shared_expert(
+    A_shared: torch.Tensor,
+    B_shared: torch.Tensor,
+    A_expert: torch.Tensor,
+    B_expert: torch.Tensor,
+    eps: float,
+) -> torch.Tensor:
+    """
+    Compute cosine-squared similarity between shared and expert low-rank updates
+    using the identity:
+        <B_s A_s, B_e A_e>_F = trace(A_s A_e^T B_e^T B_s)
+        ||B A||_F^2          = trace(A A^T B^T B)
+    Shapes: A_* = (r, d_in), B_* = (d_out, r)
+    """
+    # r_s x r_e
+    cross_A = A_shared @ A_expert.t()
+    # r_e x r_s
+    cross_B = B_expert.t() @ B_shared
+    inner = (cross_A * cross_B.t()).sum()
+
+    gram_A_shared = A_shared @ A_shared.t()      # r_s x r_s
+    gram_B_shared = B_shared.t() @ B_shared      # r_s x r_s
+    norm_shared_sq = (gram_A_shared * gram_B_shared.t()).sum()
+
+    gram_A_expert = A_expert @ A_expert.t()      # r_e x r_e
+    gram_B_expert = B_expert.t() @ B_expert      # r_e x r_e
+    norm_expert_sq = (gram_A_expert * gram_B_expert.t()).sum()
+
+    denom = (norm_shared_sq.clamp_min(0).sqrt() *
+             norm_expert_sq.clamp_min(0).sqrt() + eps)
+    return (inner / denom) ** 2
+
+
+def shared_expert_orthogonality_loss(
+    layers: Optional[Iterable[nn.Module]],
+    *,
+    eps: float = 1e-6,
+) -> torch.Tensor:
+    """
+    Sum of cosine-squared similarities between the shared LoRA branch and every
+    expert branch across all LoRA^2-augmented linear projections.
+
+    Args:
+        layers: Iterable returned by ``apply_lorasquared`` (each is a wrapped
+                attention module). If None/empty, returns a scalar zero tensor.
+        eps:    Numerical stability term added to the denominator.
+    """
+    if not layers:
+        return torch.tensor(0.0, device="cpu")
+
+    total: torch.Tensor | None = None
+
+    def maybe_accumulate(linear: nn.Module):
+        nonlocal total
+        if not isinstance(linear, LinearLoRASquared):
+            return
+        if linear.r_shared == 0 or linear.r_expert == 0 or linear.n_experts == 0:
+            return
+
+        A_shared = linear.lora_shared_A
+        B_shared = linear.lora_shared_B
+
+        for A_expert, B_expert in zip(linear.lora_expert_A, linear.lora_expert_B):
+            csq = _cosine_squared_shared_expert(
+                A_shared, B_shared, A_expert, B_expert, eps
+            )
+            total = csq if total is None else total + csq
+
+    for attn in layers:
+        for proj in getattr(attn, "q_proj", None), getattr(attn, "k_proj", None), getattr(attn, "v_proj", None), getattr(attn, "proj", None):
+            if proj is not None:
+                maybe_accumulate(proj)
+
+    if total is None:
+        return torch.tensor(0.0, device=layers[0].q_proj.weight.device)
+    return total
+
+
 class PlainMultiheadAttentionLoRASquared(nn.Module):
     """
     Multi-head attention layer enhanced with shared + expert LoRA adapters.

@@ -10,6 +10,7 @@ from lorasquaredlib import (
     get_lorasquared_parameters,
     set_active_expert_for_layers,
     set_average_expert_mode_for_layers,
+    shared_expert_orthogonality_loss,
 )
 from fs.utils.eval_utils import clip_classifier, cls_acc, evaluate
 
@@ -154,6 +155,7 @@ def run_lorasquared(
         acc_train = 0
         tot_samples = 0
         loss_epoch = 0.0
+        loss_ortho_epoch = 0.0
         if args.encoder == "vision":
             text_features = textual_features.t().half()
 
@@ -193,9 +195,26 @@ def run_lorasquared(
             )
 
             cosine_similarity = logit_scale * image_features @ text_features.t()
-            loss = F.cross_entropy(cosine_similarity, target)
+            loss_ce = F.cross_entropy(cosine_similarity, target)
+
+            ortho_loss = 0.0
+            if (
+                args.lora_ortho_lambda > 0
+                and args.lora_shared_rank > 0
+                and args.lora_expert_rank > 0
+            ):
+                with torch.cuda.amp.autocast(enabled=False):
+                    ortho_loss = shared_expert_orthogonality_loss(
+                        list_lora_layers, eps=args.lora_ortho_eps
+                    )
+                loss = loss_ce + args.lora_ortho_lambda * ortho_loss
+            else:
+                loss = loss_ce
+
             acc_train += cls_acc(cosine_similarity, target) * target.shape[0]
             loss_epoch += loss.item() * target.shape[0]
+            if isinstance(ortho_loss, torch.Tensor):
+                loss_ortho_epoch += ortho_loss.item() * target.shape[0]
             tot_samples += target.shape[0]
             optimizer.zero_grad()
             scaler.scale(loss).backward()
@@ -256,12 +275,20 @@ def run_lorasquared(
         if count_iters <= total_iters:
             acc_train /= tot_samples
             loss_epoch /= tot_samples
+            ortho_epoch = loss_ortho_epoch / tot_samples if tot_samples > 0 else 0.0
             current_lr = scheduler.get_last_lr()[0]
-            print(
-                "[{}/{}] LR: {:.6f}, Acc: {:.4f}, Loss: {:.4f}".format(
-                    count_iters, total_iters, current_lr, acc_train, loss_epoch
+            if args.lora_ortho_lambda > 0:
+                print(
+                    "[{}/{}] LR: {:.6f}, Acc: {:.4f}, Loss: {:.4f}, Ortho: {:.4f}".format(
+                        count_iters, total_iters, current_lr, acc_train, loss_epoch, ortho_epoch
+                    )
                 )
-            )
+            else:
+                print(
+                    "[{}/{}] LR: {:.6f}, Acc: {:.4f}, Loss: {:.4f}".format(
+                        count_iters, total_iters, current_lr, acc_train, loss_epoch
+                    )
+                )
 
         if validate:
             clip_model.eval()
