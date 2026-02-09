@@ -161,6 +161,9 @@ class PlainMultiheadAttentionLoRASquared(nn.Module):
         alpha_shared: float = 1.0,
         alpha_expert: float = 1.0,
         dropout_rate: float = 0.0,
+        enable_router: bool = False,
+        router_temperature: float = 1.0,
+        router_mode: str = "weighted",
     ) -> None:
         super().__init__()
 
@@ -173,6 +176,11 @@ class PlainMultiheadAttentionLoRASquared(nn.Module):
         self.batch_first = existing_mha.batch_first
         self.head_dim = existing_mha.head_dim
         self.active_expert = None
+        self.router_args = dict(
+            enable_router=enable_router,
+            router_temperature=router_temperature,
+            router_mode=router_mode,
+        )
 
         # Reconstruct projections to preserve the exact weights from the original module.
         self.q_proj = nn.Linear(
@@ -228,6 +236,9 @@ class PlainMultiheadAttentionLoRASquared(nn.Module):
                 alpha_expert=alpha_expert,
                 dropout_rate=dropout_rate,
                 fan_in_fan_out=False,
+                enable_router=enable_router,
+                router_temperature=router_temperature,
+                router_mode=router_mode,
             )
 
         self.q_proj = maybe_wrap(self.q_proj) if "q" in enable_lora else self.q_proj
