@@ -12,6 +12,7 @@ from lorasquaredlib import (
     load_lorasquared,
     set_active_expert_for_layers,
     set_average_expert_mode_for_layers,
+    set_router_state_for_layers,
     shared_expert_orthogonality_loss,
 )
 from fs.utils.eval_utils import clip_classifier, cls_acc, evaluate
@@ -358,12 +359,17 @@ def run_lorasquared(
 
     _set_active_expert(list_lora_layers, None)
 
+    layers = clip_model._lorasquared_layers
+    router_trained = getattr(args, "router_phase", False)
+
     if args.setting == "base2new":
         base_mapping, base_use_expert, base_override, avg_flag = _base_eval_config(
             base_eval_mode, dataset.label_to_expert_test, n_experts
         )
         if avg_flag:
-            set_average_expert_mode_for_layers(list_lora_layers, True)
+            set_average_expert_mode_for_layers(layers, True)
+        if router_trained:
+            set_router_state_for_layers(layers, True)
         acc_test_base = evaluate(
             clip_model,
             test_base_loader,
@@ -374,10 +380,12 @@ def run_lorasquared(
             expert_override=base_override,
         )
         if avg_flag:
-            set_average_expert_mode_for_layers(list_lora_layers, False)
+            set_average_expert_mode_for_layers(layers, False)
         print("**** Test-Base accuracy: {:.2f}. ****\n".format(acc_test_base))
 
         # New classes should rely on the shared adapter only.
+        if router_trained:
+            set_router_state_for_layers(layers, False)
         acc_test_novel = evaluate(
             clip_model,
             test_new_loader,
@@ -385,6 +393,8 @@ def run_lorasquared(
             classnames=dataset.test_new_classnames,
             use_expert=False,
         )
+        if router_trained:
+            set_router_state_for_layers(layers, True)
         print("**** Test-Novel accuracy: {:.2f}. ****\n".format(acc_test_novel))
         result = {"acc_test_base": acc_test_base, "acc_test_new": acc_test_novel}
 
@@ -514,8 +524,11 @@ def run_lorasquared_router(
 
     # Evaluate with router active
     clip_model.eval()
+    layers = clip_model._lorasquared_layers
     if args.setting == "base2new":
         test_base_loader, test_new_loader = test_loader
+        # enable router for base, disable for novel
+        set_router_state_for_layers(layers, True)
         acc_test_base = evaluate(
             clip_model,
             test_base_loader,
@@ -524,6 +537,7 @@ def run_lorasquared_router(
             label_to_expert=None,
             use_expert=False,
         )
+        set_router_state_for_layers(layers, False)
         acc_test_novel = evaluate(
             clip_model,
             test_new_loader,
@@ -531,6 +545,7 @@ def run_lorasquared_router(
             classnames=dataset.test_new_classnames,
             use_expert=False,
         )
+        set_router_state_for_layers(layers, True)
         print("**** Router-phase Test-Base accuracy: {:.2f}. ****".format(acc_test_base))
         print("**** Router-phase Test-New accuracy: {:.2f}. ****".format(acc_test_novel))
         return {"acc_test_base_router": acc_test_base, "acc_test_new_router": acc_test_novel}

@@ -603,3 +603,21 @@ def set_average_expert_mode_for_layers(
     for layer in layers:
         if hasattr(layer, "set_average_expert_mode"):
             layer.set_average_expert_mode(enabled)
+
+
+def set_router_state_for_layers(
+    layers: Optional[Iterable[nn.Module]],
+    enabled: bool,
+    mode: str | None = None,
+    temperature: float | None = None,
+) -> None:
+    """
+    Enable/disable router across all wrapped layers; optionally override mode/temp.
+    """
+    if not layers:
+        return
+    for layer in layers:
+        if hasattr(layer, "set_router_state"):
+            layer.set_router_state(
+                enabled=enabled, mode=mode, temperature=temperature
+            )
