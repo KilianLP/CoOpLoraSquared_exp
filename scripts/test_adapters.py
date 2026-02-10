@@ -179,10 +179,6 @@ def main():
         print(f"Test accuracy (router/entropy): {acc_test:.2f}")
 
 
-if __name__ == "__main__":
-    main()
-
-
 @torch.no_grad()
 def evaluate_entropy_routed(
     clip_model,
