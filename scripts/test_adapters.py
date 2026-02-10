@@ -264,3 +264,7 @@ def evaluate_entropy_routed(
         hook_handle.remove()
 
     return acc / tot
+
+
+if __name__ == "__main__":
+    main()
