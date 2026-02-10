@@ -1,8 +1,14 @@
 import argparse
-import clip
-import torch
 import os
+import sys
 import math
+import torch
+
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if REPO_ROOT not in sys.path:
+    sys.path.insert(0, REPO_ROOT)
+
+import clip
 
 from datasets import build_dataset, build_dataloaders
 from fs.utils import attach_expert_metadata
