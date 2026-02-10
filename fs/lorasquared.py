@@ -484,9 +484,12 @@ def run_lorasquared_router(
     template = dataset.template[0]
     texts = [template.format(c.replace("_", " ")) for c in dataset.classnames]
     tokenized = clip.tokenize(texts).cuda()
+    # Disable router while encoding text prompts to avoid routing shape mismatch.
+    set_router_state_for_layers(layers, False)
     with torch.no_grad():
         class_embeddings = clip_model.encode_text(tokenized)
         text_features = class_embeddings / class_embeddings.norm(dim=-1, keepdim=True)
+    set_router_state_for_layers(layers, True)
 
     while count_iters < total_iters:
         clip_model.train()
