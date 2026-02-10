@@ -12,7 +12,7 @@ import clip
 
 from datasets import build_dataset, build_dataloaders
 from fs.utils import attach_expert_metadata
-from fs.utils.eval_utils import evaluate
+from fs.utils.eval_utils import evaluate, cls_acc
 from lorasquaredlib import (
     apply_lorasquared,
     load_lorasquared,
