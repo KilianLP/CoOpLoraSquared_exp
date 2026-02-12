@@ -425,6 +425,8 @@ def run_dual_eval(args):
     if test_new_loader is not None:
         text_novel = encode_text(clip_sq, dataset.test_new_classnames)
 
+    counts = {"shared": 0, "lora": 0}
+
     def image_entropy_choice(images, text_feats):
         # logits from LoRA
         with torch.amp.autocast(device_type="cuda", dtype=torch.float16):
