@@ -18,7 +18,7 @@ from lorasquaredlib import (
     load_lorasquared,
     set_router_state_for_layers,
 )
-from loralib.utils import apply_lora, mark_only_lora_as_trainable, load_lora
+from loralib.utils import apply_lora, mark_only_lora_as_trainable
 
 
 def parse_args():
@@ -39,6 +39,7 @@ def parse_args():
     parser.add_argument("--encoder", default="both", choices=["text", "vision", "both"])
     parser.add_argument("--position", default="all", type=str)
     parser.add_argument("--params", nargs="+", default=["q", "k", "v"])
+    parser.add_argument("--r", type=int, default=4, help="LoRA rank (for plain LoRA adapter).")
     parser.add_argument("--lora_shared_rank", required=True, type=int)
     parser.add_argument("--lora_expert_rank", required=True, type=int)
     parser.add_argument("--lora_num_experts", type=int, default=0, help="Needed when lora_expert_assignment=random_balanced")
@@ -80,7 +81,7 @@ def parse_args():
     )
 
     # weights
-    parser.add_argument("--adapter_path", required=True, type=str, help="Path to saved LoRA^2 adapters (.pt).")
+    parser.add_argument("--adapter_path", type=str, help="Path to saved LoRA^2 adapters (.pt).")
 
     return parser.parse_args()
 
@@ -91,6 +92,8 @@ def main():
     if args.dual_eval:
         run_dual_eval(args)
         return
+    if not args.adapter_path:
+        raise ValueError("--adapter_path is required unless --dual_eval is used.")
 
     # load CLIP
     clip_model, preprocess = clip.load(args.backbone)
@@ -313,6 +316,30 @@ if __name__ == "__main__":
     main()
 
 
+def _load_lora_from_path(path, list_lora_layers):
+    if not os.path.exists(path):
+        raise FileNotFoundError(f"LoRA adapter not found at {path}")
+    data = torch.load(path, map_location="cpu")
+    weights = data.get("weights", data)
+    for i, layer in enumerate(list_lora_layers):
+        layer_key = f"layer_{i}"
+        if layer_key not in weights:
+            continue
+        w = weights[layer_key]
+        if "q_proj" in w:
+            layer.q_proj.w_lora_A.data.copy_(w["q_proj"]["w_lora_A"])
+            layer.q_proj.w_lora_B.data.copy_(w["q_proj"]["w_lora_B"])
+        if "k_proj" in w:
+            layer.k_proj.w_lora_A.data.copy_(w["k_proj"]["w_lora_A"])
+            layer.k_proj.w_lora_B.data.copy_(w["k_proj"]["w_lora_B"])
+        if "v_proj" in w:
+            layer.v_proj.w_lora_A.data.copy_(w["v_proj"]["w_lora_A"])
+            layer.v_proj.w_lora_B.data.copy_(w["v_proj"]["w_lora_B"])
+        if "proj" in w:
+            layer.proj.w_lora_A.data.copy_(w["proj"]["w_lora_A"])
+            layer.proj.w_lora_B.data.copy_(w["proj"]["w_lora_B"])
+
+
 def run_dual_eval(args):
     """
     Dual evaluation:
@@ -354,7 +381,7 @@ def run_dual_eval(args):
     # LoRA (model A)
     list_lora_layers = apply_lora(args, clip_lora, verbose=False)
     mark_only_lora_as_trainable(clip_lora)
-    load_lora(args, list_lora_layers)
+    _load_lora_from_path(args.lora_adapter_path, list_lora_layers)
 
     # LoRA^2 (model B)
     n_experts = args.lora_num_experts if args.lora_expert_assignment == "random_balanced" else len(dataset.classnames)
