@@ -79,6 +79,11 @@ def parse_args():
         action="store_true",
         help="Select per-sample between router-on and shared-only image logits based on lower entropy.",
     )
+    parser.add_argument(
+        "--image_margin_choice",
+        action="store_true",
+        help="Select per-sample between two image logits using higher top-1 margin (confidence).",
+    )
 
     # weights
     parser.add_argument("--adapter_path", type=str, help="Path to saved LoRA^2 adapters (.pt).")
@@ -162,7 +167,22 @@ def main():
     if args.setting == "base2new":
         test_base_loader, test_new_loader = test_loader
 
-        if args.image_entropy_choice:
+        if args.image_margin_choice:
+            acc_test_base = evaluate_image_margin_choice(
+                clip_model,
+                test_base_loader,
+                dataset,
+                router_layers=list_lora_layers,
+                text_router_on=True,
+            )
+            acc_test_novel = evaluate_image_margin_choice(
+                clip_model,
+                test_new_loader,
+                dataset,
+                router_layers=list_lora_layers,
+                text_router_on=False,  # novel text shared-only
+            )
+        elif args.image_entropy_choice:
             acc_test_base = evaluate_image_entropy_choice(
                 clip_model,
                 test_base_loader,
@@ -203,7 +223,15 @@ def main():
         print(f"Test-Novel (router/entropy image choice, text shared): {acc_test_novel:.2f}")
     else:
         # standard setting: evaluate all classes; router ON with optional entropy routing
-        if args.image_entropy_choice:
+        if args.image_margin_choice:
+            acc_test = evaluate_image_margin_choice(
+                clip_model,
+                test_loader,
+                dataset,
+                router_layers=list_lora_layers,
+                text_router_on=True,
+            )
+        elif args.image_entropy_choice:
             acc_test = evaluate_image_entropy_choice(
                 clip_model,
                 test_loader,
@@ -467,12 +495,12 @@ def run_dual_eval(args):
     if args.setting == "base2new":
         acc_base = eval_loader(test_base_loader, text_base)
         acc_novel = eval_loader(test_new_loader, text_novel)
-        print(f"Dual eval - Base (LoRA text, entropy img choice): {acc_base:.2f}")
-        print(f"Dual eval - Novel (shared text, entropy img choice): {acc_novel:.2f}")
+        print(f"Dual eval - Base (LoRA text, image choice): {acc_base:.2f}")
+        print(f"Dual eval - Novel (shared text, image choice): {acc_novel:.2f}")
         print(f"Adapter picks (images): shared={counts['shared']}, lora={counts['lora']}")
     else:
         acc = eval_loader(test_base_loader, text_base)
-        print(f"Dual eval - Standard (entropy img choice): {acc:.2f}")
+        print(f"Dual eval - Standard (image choice): {acc:.2f}")
 
 @torch.no_grad()
 def evaluate_image_entropy_choice(
@@ -533,6 +561,71 @@ def evaluate_image_entropy_choice(
         acc += cls_acc(logits_final, target) * len(logits_final)
         tot += len(logits_final)
 
+    return acc / tot
+
+
+@torch.no_grad()
+def evaluate_image_margin_choice(
+    clip_model,
+    loader,
+    dataset,
+    router_layers,
+    text_router_on: bool,
+):
+    """
+    Text encoder: router on for base (text_router_on=True) else shared only.
+    Image encoder: compute logits with router ON and shared-only; pick per-sample higher top-1 margin.
+    """
+    clip_model.eval()
+
+    # Text features
+    set_router_state_for_layers(router_layers, text_router_on)
+    texts = [dataset.template[0].format(c.replace("_", " ")) for c in dataset.classnames]
+    tokenized = clip.tokenize(texts).cuda()
+    with torch.amp.autocast(device_type="cuda", dtype=torch.float16):
+        class_embeddings = clip_model.encode_text(tokenized)
+    text_features = class_embeddings / class_embeddings.norm(dim=-1, keepdim=True)
+
+    acc = 0.0
+    tot = 0
+    counts = {"shared": 0, "lora": 0}
+
+    for images, target in loader:
+        images, target = images.cuda(), target.cuda()
+
+        # Router ON pass
+        set_router_state_for_layers(router_layers, True)
+        with torch.amp.autocast(device_type="cuda", dtype=torch.float16):
+            img_router = clip_model.encode_image(images)
+        img_router = img_router / img_router.norm(dim=-1, keepdim=True)
+        logits_router = img_router @ text_features.t()
+
+        # Shared-only pass
+        set_router_state_for_layers(router_layers, False)
+        with torch.amp.autocast(device_type="cuda", dtype=torch.float16):
+            img_shared = clip_model.encode_image(images)
+        img_shared = img_shared / img_shared.norm(dim=-1, keepdim=True)
+        logits_shared = img_shared @ text_features.t()
+        set_router_state_for_layers(router_layers, True)
+
+        def margin(logits):
+            top2 = torch.topk(logits, k=2, dim=-1).values
+            return top2[:, 0] - top2[:, 1]
+
+        margin_router = margin(logits_router)
+        margin_shared = margin(logits_shared)
+
+        use_shared = margin_shared > margin_router
+        counts["shared"] += use_shared.sum().item()
+        counts["lora"] += (~use_shared).sum().item()
+
+        use_shared = use_shared.unsqueeze(1)
+        logits_final = torch.where(use_shared, logits_shared, logits_router)
+
+        acc += cls_acc(logits_final, target) * len(logits_final)
+        tot += len(logits_final)
+
+    print(f"[margin choice] picks: shared={counts['shared']}, lora={counts['lora']}")
     return acc / tot
 
 
