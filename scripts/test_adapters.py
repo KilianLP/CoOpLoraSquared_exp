@@ -447,6 +447,8 @@ def run_dual_eval(args):
         ent_l = ent(logits_lora)
         ent_s = ent(logits_shared)
         use_shared = ent_s < ent_l
+        counts["shared"] += use_shared.sum().item()
+        counts["lora"] += (~use_shared).sum().item()
         logits_final = torch.where(use_shared.unsqueeze(1), logits_shared, logits_lora)
         return logits_final
 
@@ -465,6 +467,7 @@ def run_dual_eval(args):
         acc_novel = eval_loader(test_new_loader, text_novel)
         print(f"Dual eval - Base (LoRA text, entropy img choice): {acc_base:.2f}")
         print(f"Dual eval - Novel (shared text, entropy img choice): {acc_novel:.2f}")
+        print(f"Adapter picks (images): shared={counts['shared']}, lora={counts['lora']}")
     else:
         acc = eval_loader(test_base_loader, text_base)
         print(f"Dual eval - Standard (entropy img choice): {acc:.2f}")
