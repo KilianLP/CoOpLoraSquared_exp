@@ -53,6 +53,11 @@ Results are written to `results/<setting>/<backbone>/<dataset>/shots_<k>/seed_<s
 - Straight-through softmax router: `--router_mode ste_softmax` (hard argmax forward, softmax grads).
 - Shared–expert orthogonality (LoRA²): enable with `--lora_ortho_lambda <coef>` and tweak stability via `--lora_ortho_eps` (cosine-squared penalty between shared and expert updates).
 
+### Evaluation scripts
+- `scripts/test_adapters.py`: evaluate saved LoRA² adapters; supports router entropy fallback and per-sample shared-only routing.
+- `--image_entropy_choice`: run two image passes (router-on vs shared-only) and pick the lower-entropy logits per sample.
+- `--dual_eval --lora_adapter_path <lora.pt> --lorasq_adapter_path <lorasq.pt>`: mix a base-trained LoRA text/image with a LoRA² shared adapter; text: base=LoRA, novel=LoRA²-shared; image: pick lower-entropy between LoRA and shared-only per sample.
+
 ## 4. Tips
 - Export `CUBLAS_WORKSPACE_CONFIG=:4096:8` if you keep deterministic CUDA enabled (default in `main.py`).
 - Reduce `--workers` if the dataloader warns about too many worker processes.
