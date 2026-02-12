@@ -312,10 +312,6 @@ def evaluate_entropy_routed(
     return acc / tot
 
 
-if __name__ == "__main__":
-    main()
-
-
 def _load_lora_from_path(path, list_lora_layers):
     if not os.path.exists(path):
         raise FileNotFoundError(f"LoRA adapter not found at {path}")
@@ -533,3 +529,7 @@ def evaluate_image_entropy_choice(
         tot += len(logits_final)
 
     return acc / tot
+
+
+if __name__ == "__main__":
+    main()
