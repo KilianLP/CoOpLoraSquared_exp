@@ -19,6 +19,7 @@ from .utils import (
     set_active_expert_for_layers,
     set_average_expert_mode_for_layers,
     set_router_state_for_layers,
+    project_shared_grads_orthogonal,
     shared_expert_orthogonality_loss,
 )
 
@@ -35,5 +36,6 @@ __all__ = [
     "set_active_expert_for_layers",
     "set_average_expert_mode_for_layers",
     "set_router_state_for_layers",
+    "project_shared_grads_orthogonal",
     "shared_expert_orthogonality_loss",
 ]

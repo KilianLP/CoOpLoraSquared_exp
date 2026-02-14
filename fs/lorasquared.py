@@ -14,6 +14,7 @@ from lorasquaredlib import (
     set_average_expert_mode_for_layers,
     set_router_state_for_layers,
     shared_expert_orthogonality_loss,
+    project_shared_grads_orthogonal,
 )
 from fs.utils.eval_utils import clip_classifier, cls_acc, evaluate
 
@@ -242,6 +243,12 @@ def run_lorasquared(
                 tot_samples += target.shape[0]
                 optimizer.zero_grad()
                 scaler.scale(loss).backward()
+
+                # unscale before projecting
+                scaler.unscale_(optimizer)
+                if getattr(args, "proj_shared_grad", False):
+                    project_shared_grads_orthogonal(list_lora_layers, eps=getattr(args, "proj_eps", 1e-6))
+
                 scaler.step(optimizer)
 
                 scaler.update()

@@ -616,6 +616,88 @@ def set_average_expert_mode_for_layers(
             layer.set_average_expert_mode(enabled)
 
 
+def _effective_lora_grad(B: torch.nn.Parameter, A: torch.nn.Parameter) -> torch.Tensor | None:
+    """
+    Reconstruct an approximate full gradient for the low-rank weight delta (B @ A).
+    Uses both grads if available:
+      grad_deltaW ≈ grad_B @ A.detach() + B.detach() @ grad_A
+    """
+    gB = B.grad
+    gA = A.grad
+    if gB is None and gA is None:
+        return None
+    with torch.no_grad():
+        term1 = gB @ A.detach() if gB is not None else 0
+        term2 = B.detach() @ gA if gA is not None else 0
+        grad = term1 + term2
+    return grad
+
+
+def project_shared_grads_orthogonal(
+    layers: Optional[Iterable[nn.Module]], eps: float = 1e-6
+) -> None:
+    """
+    Project shared LoRA gradients to be orthogonal to every expert gradient, using
+    the effective gradient of the low-rank weight delta (B @ A):
+        G = [grad_e1 ... grad_eE], grad_s = grad of shared deltaW
+        grad_s <- grad_s - G (G^T G + eps I)^{-1} G^T grad_s
+    The resulting projected grad is redistributed back to shared A/B via least-squares:
+        grad_A, grad_B updated so that B@A's grad matches the projected grad.
+    """
+    if not layers:
+        return
+
+    def project_delta_grad(shared_grad: torch.Tensor, expert_grads: list[torch.Tensor]):
+        if shared_grad is None or not expert_grads:
+            return shared_grad
+        G = torch.stack([g.reshape(-1) for g in expert_grads], dim=1)  # [d, E]
+        gs_flat = shared_grad.reshape(-1, 1)  # [d,1]
+        gram = G.t() @ G
+        gram = gram + eps * torch.eye(gram.shape[0], device=gram.device, dtype=gram.dtype)
+        try:
+            inv = torch.linalg.inv(gram)
+        except RuntimeError:
+            inv = torch.linalg.pinv(gram)
+        proj = G @ (inv @ (G.t() @ gs_flat))
+        gs_flat = gs_flat - proj
+        return gs_flat.view_as(shared_grad)
+
+    for attn in layers:
+        for proj in getattr(attn, "q_proj", None), getattr(attn, "k_proj", None), getattr(attn, "v_proj", None), getattr(attn, "proj", None):
+            if not isinstance(proj, LinearLoRASquared):
+                continue
+            if proj.r_shared == 0 or proj.r_expert == 0:
+                continue
+            # Effective grads
+            grad_shared = _effective_lora_grad(proj.lora_shared_B, proj.lora_shared_A)
+            expert_grads = []
+            for A_e, B_e in zip(proj.lora_expert_A, proj.lora_expert_B):
+                g_eff = _effective_lora_grad(B_e, A_e)
+                if g_eff is not None:
+                    expert_grads.append(g_eff)
+            if grad_shared is None or not expert_grads:
+                continue
+            proj_grad = project_delta_grad(grad_shared, expert_grads)
+            if proj_grad is None:
+                continue
+            # Redistribute projected grad back to shared A/B least-squares:
+            # Solve for dA, dB s.t. B_s dA + dB A_s ≈ proj_grad
+            # Use simple decomposition: keep original ratios via gradients if available.
+            if proj.lora_shared_A.grad is not None and proj.lora_shared_B.grad is not None:
+                # Recompute grads proportionally
+                gA = proj.lora_shared_A.grad
+                gB = proj.lora_shared_B.grad
+                gA.mul_(0.0)
+                gB.mul_(0.0)
+                # Distribute equally via two terms
+                gB.add_(proj_grad @ proj.lora_shared_A.detach().t())
+                gA.add_(proj.lora_shared_B.detach().t() @ proj_grad)
+            else:
+                # If no grad buffers, just set .grad on B and A to zeros to avoid stale values
+                if proj.lora_shared_A.grad is not None:
+                    proj.lora_shared_A.grad.zero_()
+                if proj.lora_shared_B.grad is not None:
+                    proj.lora_shared_B.grad.zero_()
 def set_router_state_for_layers(
     layers: Optional[Iterable[nn.Module]],
     enabled: bool,

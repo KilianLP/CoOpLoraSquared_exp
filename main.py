@@ -122,6 +122,10 @@ def get_arguments():
         help="Temperature for router softmax/gumbel during second phase.")
     parser.add_argument('--router_phase', action='store_true',
         help="Run the router-only second phase after LoRA^2 training (or after loading adapters).")
+    parser.add_argument('--proj_shared_grad', action='store_true',
+        help="Project shared LoRA^2 gradients to be orthogonal to expert gradients each step.")
+    parser.add_argument('--proj_eps', type=float, default=1e-6,
+        help="Epsilon for shared gradient projection denominator.")
     parser.add_argument('--validate', action='store_true',
         help="Run the validation split after each training epoch.")
     parser.add_argument(
