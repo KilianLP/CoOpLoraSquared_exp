@@ -32,8 +32,8 @@ def parse_args():
 
 
 def compress_linear(layer: torch.nn.Linear, k: int):
-    W = layer.weight.data
-    device = W.device
+    W = layer.weight.data.float()  # ensure float32 for SVD
+    device = layer.weight.data.device
     W_cpu = W.detach().cpu()
     try:
         U, S, Vh = torch.linalg.svd(W_cpu, full_matrices=False)
