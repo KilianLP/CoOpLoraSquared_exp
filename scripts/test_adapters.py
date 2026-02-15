@@ -84,6 +84,12 @@ def parse_args():
         action="store_true",
         help="Select per-sample between two image logits using higher top-1 margin (confidence).",
     )
+    parser.add_argument(
+        "--shared_only",
+        action="store_true",
+        help="Force shared-only adapters (disable router/experts) for evaluation.",
+    )
+    parser.add_argument("--results_csv", type=str, help="Optional path to save a one-row CSV with the metrics.")
 
     # weights
     parser.add_argument("--adapter_path", type=str, help="Path to saved LoRA^2 adapters (.pt).")
@@ -127,7 +133,7 @@ def main():
     else:
         n_experts = len(dataset.classnames)
 
-    # instrument model with LoRA^2 (router enabled)
+    # instrument model with LoRA^2 (router enabled unless shared_only)
     list_lora_layers = apply_lorasquared(
         clip_model,
         backbone=args.backbone,
@@ -140,7 +146,7 @@ def main():
         alpha_shared=args.alpha,
         alpha_expert=args.alpha,
         dropout_rate=args.dropout_rate,
-        enable_router=True,
+        enable_router=not args.shared_only,
         router_temperature=args.router_temperature,
         router_mode=args.router_mode,
         verbose=False,
@@ -167,7 +173,25 @@ def main():
     if args.setting == "base2new":
         test_base_loader, test_new_loader = test_loader
 
-        if args.image_margin_choice:
+        if args.shared_only:
+            set_router_state_for_layers(list_lora_layers, False)
+            acc_test_base = evaluate(
+                clip_model,
+                test_base_loader,
+                template=dataset.template[0],
+                classnames=dataset.test_classnames,
+                use_expert=False,
+            )
+            acc_test_novel = evaluate(
+                clip_model,
+                test_new_loader,
+                template=dataset.template[0],
+                classnames=dataset.test_new_classnames,
+                use_expert=False,
+            )
+            print(f"Test-Base (shared only): {acc_test_base:.2f}")
+            print(f"Test-Novel (shared only): {acc_test_novel:.2f}")
+        elif args.image_margin_choice:
             acc_test_base = evaluate_image_margin_choice(
                 clip_model,
                 test_base_loader,
@@ -221,9 +245,22 @@ def main():
 
         print(f"Test-Base (router/entropy image choice): {acc_test_base:.2f}")
         print(f"Test-Novel (router/entropy image choice, text shared): {acc_test_novel:.2f}")
+        _maybe_save_csv(args, {
+            "acc_test_base": acc_test_base,
+            "acc_test_novel": acc_test_novel,
+        })
     else:
         # standard setting: evaluate all classes; router ON with optional entropy routing
-        if args.image_margin_choice:
+        if args.shared_only:
+            set_router_state_for_layers(list_lora_layers, False)
+            acc_test = evaluate(
+                clip_model,
+                test_loader,
+                template=dataset.template[0],
+                classnames=dataset.test_classnames,
+                use_expert=False,
+            )
+        elif args.image_margin_choice:
             acc_test = evaluate_image_margin_choice(
                 clip_model,
                 test_loader,
@@ -251,6 +288,7 @@ def main():
                 router_layers=list_lora_layers,
             )
         print(f"Test accuracy (router/entropy or image-choice): {acc_test:.2f}")
+        _maybe_save_csv(args, {"acc_test": acc_test})
 
 
 @torch.no_grad()
@@ -627,6 +665,16 @@ def evaluate_image_margin_choice(
 
     print(f"[margin choice] picks: shared={counts['shared']}, lora={counts['lora']}")
     return acc / tot
+
+
+def _maybe_save_csv(args, metrics: dict):
+    if not args.results_csv:
+        return
+    import pandas as pd
+    os.makedirs(os.path.dirname(args.results_csv), exist_ok=True)
+    row = {"dataset": args.dataset, "setting": args.setting, "shots": args.shots, "seed": args.seed}
+    row.update(metrics)
+    pd.DataFrame([row]).to_csv(args.results_csv, index=False)
 
 
 if __name__ == "__main__":
