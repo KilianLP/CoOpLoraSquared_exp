@@ -671,10 +671,12 @@ def _maybe_save_csv(args, metrics: dict):
     if not args.results_csv:
         return
     import pandas as pd
-    os.makedirs(os.path.dirname(args.results_csv), exist_ok=True)
+    os.makedirs(os.path.dirname(args.results_csv) or ".", exist_ok=True)
     row = {"dataset": args.dataset, "setting": args.setting, "shots": args.shots, "seed": args.seed}
     row.update(metrics)
-    pd.DataFrame([row]).to_csv(args.results_csv, index=False)
+    df = pd.DataFrame([row])
+    exists = os.path.isfile(args.results_csv)
+    df.to_csv(args.results_csv, mode="a", header=not exists, index=False)
 
 
 if __name__ == "__main__":
